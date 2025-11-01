@@ -78,51 +78,93 @@ RC Table::create(Db *db, int32_t table_id, const char *path, const char *name, c
 
   close(fd);
 
-  // 创建文件
-  const vector<FieldMeta> *trx_fields = db->trx_kit().trx_fields();
-  if ((rc = table_meta_.init(table_id, name, trx_fields, attributes, primary_keys, storage_format, storage_engine)) != RC::SUCCESS) {
-    LOG_ERROR("Failed to init table meta. name:%s, ret:%d", name, rc);
-    return rc;  // delete table file
+  try {
+    // 创建文件
+    const vector<FieldMeta> *trx_fields = db->trx_kit().trx_fields();
+    if ((rc = table_meta_.init(table_id, name, trx_fields, attributes, primary_keys, storage_format, storage_engine)) != RC::SUCCESS) {
+      LOG_ERROR("Failed to init table meta. name:%s, ret:%d", name, rc);
+      return rc;
+    }
+
+    // 使用try-catch包装文件操作
+    try {
+      fstream fs;
+      fs.open(path, ios_base::out | ios_base::binary);
+      if (!fs.is_open()) {
+        LOG_ERROR("Failed to open file for write. file name=%s, errmsg=%s", path, strerror(errno));
+        return RC::IOERR_OPEN;
+      }
+
+      // 记录元数据到文件中
+      table_meta_.serialize(fs);
+      fs.close();
+    } catch (const std::exception &e) {
+      LOG_ERROR("Exception occurred when writing table meta: %s", e.what());
+      return RC::IOERR_WRITE;
+    } catch (...) {
+      LOG_ERROR("Unknown exception occurred when writing table meta");
+      return RC::IOERR_WRITE;
+    }
+
+    db_ = db;
+
+    string data_file;
+    try {
+      data_file = table_data_file(base_dir, name);
+      BufferPoolManager &bpm = db->buffer_pool_manager();
+      rc = bpm.create_file(data_file.c_str());
+      if (rc != RC::SUCCESS) {
+        LOG_ERROR("Failed to create disk buffer pool of data file. file name=%s", data_file.c_str());
+        return rc;
+      }
+    } catch (const std::exception &e) {
+      LOG_ERROR("Exception occurred when creating data file: %s", e.what());
+      return RC::IOERR_CREATE;
+    } catch (...) {
+      LOG_ERROR("Unknown exception occurred when creating data file");
+      return RC::IOERR_CREATE;
+    }
+
+    try {
+      if (table_meta_.storage_engine() == StorageEngine::HEAP) {
+        engine_ = make_unique<HeapTableEngine>(&table_meta_, db_, this);
+      } else if (table_meta_.storage_engine() == StorageEngine::LSM) {
+        engine_ = make_unique<LsmTableEngine>(&table_meta_, db_, this);
+      } else {
+        rc = RC::UNSUPPORTED;
+        LOG_WARN("Unsupported storage engine type: %d", table_meta_.storage_engine());
+        return rc;
+      }
+      
+      rc = engine_->open();
+      if (rc != RC::SUCCESS) {
+        LOG_WARN("Failed to open table %s due to engine open failed.", data_file.c_str());
+        engine_.reset(); // 清理失败的引擎
+        return rc;
+      }
+    } catch (const std::exception &e) {
+      LOG_ERROR("Exception occurred when initializing table engine: %s", e.what());
+      engine_.reset(); // 确保引擎资源被释放
+      return RC::INTERNAL;
+    } catch (...) {
+      LOG_ERROR("Unknown exception occurred when initializing table engine");
+      engine_.reset(); // 确保引擎资源被释放
+      return RC::INTERNAL;
+    }
+
+    LOG_INFO("Successfully create table %s:%s", base_dir, name);
+    return RC::SUCCESS;
+  } catch (const std::exception &e) {
+    LOG_ERROR("Unexpected exception during table creation: %s", e.what());
+    // 确保资源被清理
+    engine_.reset();
+    return RC::INTERNAL;
+  } catch (...) {
+    LOG_ERROR("Unknown unexpected exception during table creation");
+    // 确保资源被清理
+    engine_.reset();
+    return RC::INTERNAL;
   }
-
-  fstream fs;
-  fs.open(path, ios_base::out | ios_base::binary);
-  if (!fs.is_open()) {
-    LOG_ERROR("Failed to open file for write. file name=%s, errmsg=%s", path, strerror(errno));
-    return RC::IOERR_OPEN;
-  }
-
-  // 记录元数据到文件中
-  table_meta_.serialize(fs);
-  fs.close();
-
-  db_       = db;
-
-  string             data_file = table_data_file(base_dir, name);
-  BufferPoolManager &bpm       = db->buffer_pool_manager();
-  rc                           = bpm.create_file(data_file.c_str());
-  if (rc != RC::SUCCESS) {
-    LOG_ERROR("Failed to create disk buffer pool of data file. file name=%s", data_file.c_str());
-    return rc;
-  }
-
-  if (table_meta_.storage_engine() == StorageEngine::HEAP) {
-    engine_ = make_unique<HeapTableEngine>(&table_meta_, db_, this);
-  } else if (table_meta_.storage_engine() == StorageEngine::LSM) {
-    engine_ = make_unique<LsmTableEngine>(&table_meta_, db_, this);
-  } else {
-    rc = RC::UNSUPPORTED;
-    LOG_WARN("Unsupported storage engine type: %d", table_meta_.storage_engine());
-    return rc;
-  }
-  rc = engine_->open();
-  if (rc != RC::SUCCESS) {
-    LOG_WARN("Failed to open table %s due to engine open failed.", data_file.c_str());
-    return rc;
-  }
-
-  LOG_INFO("Successfully create table %s:%s", base_dir, name);
-  return rc;
 }
 
 RC Table::drop(const char* path)

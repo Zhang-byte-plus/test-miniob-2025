@@ -23,14 +23,40 @@ See the Mulan PSL v2 for more details. */
 
 RC DropTableExecutor::execute(SQLStageEvent *sql_event)
 {
-  Stmt    *stmt    = sql_event->stmt();
-  Session *session = sql_event->session_event()->session();
-  
+  try {
+    Stmt    *stmt    = sql_event->stmt();
+    Session *session = sql_event->session_event()->session();
+    
+    if (nullptr == stmt || nullptr == session) {
+      LOG_ERROR("Invalid parameters in DropTableExecutor::execute");
+      return RC::INTERNAL;
+    }
 
-  DropTableStmt *drop_table_stmt = static_cast<DropTableStmt *>(stmt);
+    DropTableStmt *drop_table_stmt = static_cast<DropTableStmt *>(stmt);
+    if (nullptr == drop_table_stmt) {
+      LOG_ERROR("Invalid drop table statement");
+      return RC::INTERNAL;
+    }
 
-  const char *table_name = drop_table_stmt->table_name().c_str();
-  RC rc = session->get_current_db()->drop_table(table_name);
+    const char *table_name = drop_table_stmt->table_name().c_str();
+    if (nullptr == table_name || table_name[0] == '\0') {
+      LOG_ERROR("Invalid table name");
+      return RC::INTERNAL;
+    }
 
-  return rc;
+    Database *db = session->get_current_db();
+    if (nullptr == db) {
+      LOG_ERROR("No current database selected");
+      return RC::INTERNAL;
+    }
+
+    RC rc = db->drop_table(table_name);
+    return rc;
+  } catch (const std::exception &e) {
+    LOG_ERROR("Exception occurred during drop table execution: %s", e.what());
+    return RC::INTERNAL;
+  } catch (...) {
+    LOG_ERROR("Unknown exception occurred during drop table execution");
+    return RC::INTERNAL;
+  }
 }
