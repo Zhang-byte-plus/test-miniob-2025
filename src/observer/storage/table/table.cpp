@@ -133,15 +133,23 @@ RC Table::drop(const char* path)
     return RC::INTERNAL; 
   }
 
-  // 修复：使用正确的成员变量和函数调用方式
-  // 注意：base_dir应该是从哪里获取？根据之前的create函数，base_dir可能需要通过其他方式获取
-  // 暂时注释掉这部分代码，因为Table类中没有base_dir_成员变量
-  // string             data_file = table_data_file(base_dir_.c_str(), table_meta_.name());
-  // BufferPoolManager &bpm       = db_->buffer_pool_manager();
-  // bpm.remove_file(data_file.c_str());
+  // 从path中提取目录部分作为base_dir
+  string path_str(path);
+  size_t last_slash_pos = path_str.find_last_of("/\\");
+  string base_dir = (last_slash_pos != string::npos) ? path_str.substr(0, last_slash_pos) : ".";
   
-  // record_handler_和indexes_成员变量已被注释掉，不应该再使用
-  // 相关清理工作应该通过engine_来处理
+  // 删除数据文件
+  if (db_ != nullptr) {
+    string data_file = table_data_file(base_dir.c_str(), table_meta_.name());
+    BufferPoolManager &bpm = db_->buffer_pool_manager();
+    RC rc = bpm.remove_file(data_file.c_str());
+    if (rc != RC::SUCCESS) {
+      LOG_WARN("Failed to remove data file: %s, rc=%s", data_file.c_str(), strrc(rc));
+      // 即使删除数据文件失败，我们也继续执行，因为表元数据文件已经被删除
+    }
+  }
+  
+  // 清理lob_handler
   if (lob_handler_ != nullptr) {
     delete lob_handler_;
     lob_handler_ = nullptr;
