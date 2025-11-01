@@ -127,36 +127,61 @@ RC Table::create(Db *db, int32_t table_id, const char *path, const char *name, c
 
 RC Table::drop(const char* path)
 {
-  if(::remove(path)<0)
-  {
-    LOG_ERROR("Failed to delete table file,filename=%s ,errmsg=%s",path,strerror(errno));
-    return RC::INTERNAL; 
+  // 先尝试获取数据文件路径
+  string data_file;
+  if (db_ != nullptr) {
+    // 从path中提取目录部分作为base_dir
+    string path_str(path);
+    size_t last_slash_pos = path_str.find_last_of("/\\");
+    string base_dir = (last_slash_pos != string::npos) ? path_str.substr(0, last_slash_pos) : ".";
+    
+    data_file = table_data_file(base_dir.c_str(), table_meta_.name());
+    
+    // 先尝试关闭数据文件
+    try {
+      BufferPoolManager &bpm = db_->buffer_pool_manager();
+      (void)bpm.close_file(data_file.c_str()); // 忽略关闭失败，可能文件不存在
+    } catch (...) {
+      // 捕获所有异常，确保不会因BufferPoolManager操作崩溃
+      LOG_WARN("Exception occurred when closing data file: %s", data_file.c_str());
+    }
   }
 
-  // 从path中提取目录部分作为base_dir
-  string path_str(path);
-  size_t last_slash_pos = path_str.find_last_of("/\\");
-  string base_dir = (last_slash_pos != string::npos) ? path_str.substr(0, last_slash_pos) : ".";
+  // 删除表元数据文件
+  if(::remove(path) < 0) {
+    LOG_WARN("Failed to delete table file, filename=%s, errmsg=%s", path, strerror(errno));
+    // 继续执行，即使删除表文件失败也清理资源
+  }
   
   // 删除数据文件
-  if (db_ != nullptr) {
-    string data_file = table_data_file(base_dir.c_str(), table_meta_.name());
-    BufferPoolManager &bpm = db_->buffer_pool_manager();
-    RC rc = bpm.remove_file(data_file.c_str());
-    if (rc != RC::SUCCESS) {
-      LOG_WARN("Failed to remove data file: %s, rc=%s", data_file.c_str(), strrc(rc));
-      // 即使删除数据文件失败，我们也继续执行，因为表元数据文件已经被删除
+  if (!data_file.empty()) {
+    try {
+      if (::remove(data_file.c_str()) != 0) {
+        LOG_WARN("Failed to remove data file: %s, errmsg=%s", data_file.c_str(), strerror(errno));
+        // 继续执行，因为删除失败可能是因为文件不存在
+      }
+    } catch (...) {
+      // 捕获所有异常，确保不会崩溃
+      LOG_WARN("Exception occurred when removing data file: %s", data_file.c_str());
     }
   }
   
   // 清理lob_handler
   if (lob_handler_ != nullptr) {
-    delete lob_handler_;
-    lob_handler_ = nullptr;
+    try {
+      delete lob_handler_;
+      lob_handler_ = nullptr;
+    } catch (...) {
+      LOG_WARN("Exception occurred when deleting lob_handler");
+    }
   }
   
   // 通过engine_释放资源
-  engine_.reset();
+  try {
+    engine_.reset();
+  } catch (...) {
+    LOG_WARN("Exception occurred when resetting engine");
+  }
   
   return RC::SUCCESS;
 }
