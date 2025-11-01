@@ -193,11 +193,24 @@ RC Db::drop_table(const char *table_name)
     return RC::SCHEMA_TABLE_NOT_EXIST;
       }
   
-  RC rc = table->drop(table_file_path.c_str());
+  RC rc = RC::SUCCESS;
+  
+  // 使用try-catch块确保资源安全清理
+  try {
+    rc = table->drop(table_file_path.c_str());
+  } catch (...) {
+    LOG_WARN("Exception occurred when dropping table %s", table_name);
+    // 即使出现异常，也要确保资源被释放
+  }
 
-
-  delete table;
-  opened_tables_.erase(table_name);
+  // 无论drop操作是否成功，都要删除table指针并从opened_tables中移除
+  try {
+    delete table;
+    opened_tables_.erase(table_name);
+  } catch (...) {
+    LOG_ERROR("Exception occurred when cleaning up table resources for %s", table_name);
+    // 无法恢复，记录错误但继续执行
+  }
 
   
   return rc;
